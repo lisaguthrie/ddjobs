@@ -14,8 +14,9 @@ namespace timerjob
         private readonly ILogger _logger;
 
         // Environment variable names
-        private string ENVVAR_RETRIES = "JOBDUMPER_RETRIES";
-        private string ENVVAR_KEYWORDS = "JOBDUMPER_SEARCHKEYWORDS";
+        private string ENVVAR_RETRIES = "DDJOBS_RETRIES";
+        private string ENVVAR_KEYWORDS = "DDJOBS_SEARCHKEYWORDS";
+        private string ENVVAR_MANAGEDIDENTITY = "DDJOBS_MANAGEDIDENTITYCLIENTID";
 
         // Default values for environment variables
         private readonly int RETRIES = 2;
@@ -25,17 +26,25 @@ namespace timerjob
 
         public DdJobsTimerTrigger(ILoggerFactory loggerFactory)
         {
-            _blobServiceClient = new BlobServiceClient(new Uri("https://ddjobs.blob.core.windows.net/"), new DefaultAzureCredential());
+            // Default to using the DefaultAzureCredential, but if a Managed Identity Client ID is provided, pass that in.
+            DefaultAzureCredential credential = new DefaultAzureCredential();
+            string? managedIdentityClientId = Environment.GetEnvironmentVariable(ENVVAR_MANAGEDIDENTITY);
+            if (!String.IsNullOrEmpty(managedIdentityClientId))
+            {
+                credential = new DefaultAzureCredential(new DefaultAzureCredentialOptions { ManagedIdentityClientId = managedIdentityClientId });
+            }
+
+            _blobServiceClient = new BlobServiceClient(new Uri("https://ddjobs.blob.core.windows.net/"), credential);
             _logger = loggerFactory.CreateLogger<DdJobsTimerTrigger>();
         }
 
         [Function("DdJobsTimerTrigger")]
-        public async Task Run([TimerTrigger("%JOBDUMPER_CRONEXPRESSION%")] TimerInfo myTimer)
+        public async Task Run([TimerTrigger("%DDJOBS_CRONEXPRESSION%")] TimerInfo myTimer)
         {
             _logger.LogInformation($"C# Timer trigger function executed at: {DateTime.Now}");
 
             _logger.LogInformation($"JobDumperTimerTrigger function executed at: {DateTime.Now}");
-            _logger.LogInformation("Cron expression is '{0}'", Environment.GetEnvironmentVariable("JOBDUMPER_CRONEXPRESSION"));
+            _logger.LogInformation("Cron expression is '{0}'", Environment.GetEnvironmentVariable("DDJOBS_CRONEXPRESSION"));
 
             var containerClient = _blobServiceClient.GetBlobContainerClient("ddjobs");
             var blobClient = containerClient.GetBlobClient("currentjobs.json");
@@ -59,7 +68,7 @@ namespace timerjob
             // The list of keywords to search for. These should be URL encoded, phrases enclosed in
             // (properly escaped) quotation marks.
             string[] searchKeywords = SEARCHKEYWORDS;
-            string searchKeywordsFromConfig = Environment.GetEnvironmentVariable(ENVVAR_KEYWORDS);
+            string? searchKeywordsFromConfig = Environment.GetEnvironmentVariable(ENVVAR_KEYWORDS);
             if (!String.IsNullOrEmpty(searchKeywordsFromConfig))
             {
                 string[] parsedKeywordsFromConfig = searchKeywordsFromConfig.Split(',');
