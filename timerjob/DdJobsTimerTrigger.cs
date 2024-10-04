@@ -3,20 +3,23 @@ using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 using Azure.Storage.Blobs;
 using Azure.Identity;
-using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Web;
+using Azure.Core.Diagnostics;
+using System.Diagnostics.Tracing;
 
 namespace timerjob
 {
     public class DdJobsTimerTrigger
     {
         private readonly ILogger _logger;
+        private readonly AzureEventSourceListener _listener;
 
         // Environment variable names
-        private string ENVVAR_RETRIES = "DDJOBS_RETRIES";
-        private string ENVVAR_KEYWORDS = "DDJOBS_SEARCHKEYWORDS";
-        private string ENVVAR_MANAGEDIDENTITY = "DDJOBS_MANAGEDIDENTITYCLIENTID";
+        private readonly string ENVVAR_RETRIES = "DDJOBS_RETRIES";
+        private readonly string ENVVAR_KEYWORDS = "DDJOBS_SEARCHKEYWORDS";
+        private readonly string ENVVAR_MANAGEDIDENTITY = "DDJOBS_MANAGEDIDENTITYCLIENTID";
+        private readonly string ENVVAR_LOGGINGLEVEL = "DDJOBS_LOGGINGLEVEL";
 
         // Default values for environment variables
         private readonly int RETRIES = 2;
@@ -26,16 +29,55 @@ namespace timerjob
 
         public DdJobsTimerTrigger(ILoggerFactory loggerFactory)
         {
-            // Default to using the DefaultAzureCredential, but if a Managed Identity Client ID is provided, pass that in.
-            DefaultAzureCredential credential = new DefaultAzureCredential();
+            _logger = loggerFactory.CreateLogger<DdJobsTimerTrigger>();
+
+            // Load the Azure SDK logging level from the environment variable. If it's not set, default to Warning.
+            string? loggingLevel = Environment.GetEnvironmentVariable(ENVVAR_LOGGINGLEVEL);
+            EventLevel eventLevel = EventLevel.Warning; // default to Warning if we can't load the logging level
+            switch (loggingLevel)
+            {
+                case "Critical":
+                    eventLevel = EventLevel.Critical;
+                    break;
+                case "Error":
+                    eventLevel = EventLevel.Error;
+                    break;
+                case "Warning":
+                    eventLevel = EventLevel.Warning;
+                    break;
+                case "Informational":
+                    eventLevel = EventLevel.Informational;
+                    break;
+                case "Verbose":
+                    eventLevel = EventLevel.Verbose;
+                    break;
+                default:
+                    _logger.LogInformation("Could not load logging level from '{0}' environment variable. Using default: {1}", ENVVAR_LOGGINGLEVEL, eventLevel.ToString());
+                    break;
+            }
+
+            // Set up a listener to monitor logged events.
+            _listener = AzureEventSourceListener.CreateConsoleLogger(eventLevel);
+
+            DefaultAzureCredentialOptions options = new DefaultAzureCredentialOptions
+            {
+                Diagnostics = { 
+                    LoggedHeaderNames = { "x-ms-request-id" },
+                    LoggedQueryParameters = { "api-version", "resource" },
+                    IsAccountIdentifierLoggingEnabled = true
+                }
+            };
             string? managedIdentityClientId = Environment.GetEnvironmentVariable(ENVVAR_MANAGEDIDENTITY);
             if (!String.IsNullOrEmpty(managedIdentityClientId))
             {
-                credential = new DefaultAzureCredential(new DefaultAzureCredentialOptions { ManagedIdentityClientId = managedIdentityClientId });
-            }
+                options.ManagedIdentityClientId = managedIdentityClientId;
+            }            
+
+            DefaultAzureCredential credential = new DefaultAzureCredential(options);
 
             _blobServiceClient = new BlobServiceClient(new Uri("https://ddjobs.blob.core.windows.net/"), credential);
-            _logger = loggerFactory.CreateLogger<DdJobsTimerTrigger>();
+
+            _logger.LogInformation("DdJobsTimerTrigger function initialized");
         }
 
         [Function("DdJobsTimerTrigger")]
